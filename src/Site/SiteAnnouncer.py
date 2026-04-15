@@ -112,7 +112,7 @@ class SiteAnnouncer:
         time.sleep(0.01)
         self.updateWebsocket(trackers="announcing")
 
-        gevent.joinall(greenlets, timeout=20)  # Wait for announce finish
+        gevent.joinall(greenlets, timeout=20)  # Wait for tracker announce finish
 
         for thread in greenlets:
             if thread.value is None:
@@ -183,10 +183,24 @@ class SiteAnnouncer:
     def announceDHT(self):
         if self.dht_server is None:
             return
-        peers = self.dht_server.announce(self.site.address_sha1)
-        self.site.log.debug(f'DHT {self.site.address_sha1.hex()} got {peers=}')
-        for peer in peers:
-            self.site.addPeer(peer['addr'], peer['port'], source='dht')
+        site = self.site
+
+        def onDHTPeers(peers):
+            """Called from asyncio context when DHT announce finds peers."""
+            added = 0
+            for peer in peers:
+                if site.addPeer(peer['addr'], peer['port'], source='dht'):
+                    added += 1
+            if added:
+                site.log.debug(f'DHT: got {added} new peers')
+                site.worker_manager.onPeers()
+                site.updateWebsocket(peers_added=added)
+
+        # Fire-and-forget: returns cached peers immediately,
+        # calls onDHTPeers() later when async announce completes
+        cached_peers = self.dht_server.announce(self.site.address_sha1, callback=onDHTPeers)
+        for peer in cached_peers:
+            site.addPeer(peer['addr'], peer['port'], source='dht')
 
     def announceTracker(self, tracker, mode="start", num_want=10):
         """Announces site to tracker, receives site peers from it
