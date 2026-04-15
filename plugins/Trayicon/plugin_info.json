@@ -1,5 +1,5 @@
 {
 	"name": "Trayicon",
-	"description": "Icon for system tray. (Windows only)",
+	"description": "System tray icon with menu and notifications. (Windows, macOS, Linux)",
 	"default": "enabled"
 }
