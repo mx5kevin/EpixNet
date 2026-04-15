@@ -63,13 +63,26 @@ class ActionsPlugin(object):
     def main(self):
         try:
             import pystray
+            import pystray._base
             from PIL import Image
         except ImportError as err:
             print("Trayicon plugin: pystray or Pillow not installed (%s), skipping tray icon." % err)
             super(ActionsPlugin, self).main()
             return
 
-        import gevent.threadpool
+        # pystray runs on a real OS thread and uses queue.Queue for signaling.
+        # gevent.monkey.patch_all() replaces queue.Queue with a cooperative
+        # version that only works inside a gevent hub, which causes LoopExit
+        # when pystray's setup thread blocks on .get(). Swap in the unpatched
+        # stdlib Queue on pystray's own queue module reference.
+        try:
+            import gevent.monkey
+            real_queue_cls = gevent.monkey.get_original("queue", "Queue")
+            pystray._base.queue.Queue = real_queue_cls
+        except Exception as err:
+            print("Trayicon plugin: failed to restore stdlib queue.Queue: %s" % err)
+
+        import threading
         import main
 
         self.main = main
@@ -164,21 +177,27 @@ class ActionsPlugin(object):
             except Exception as err:
                 print("Error removing trayicon: %s" % err)
 
-        self.quit_servers_event = gevent.threadpool.ThreadResult(
-            lambda res: gevent.spawn_later(0.1, self.quitServers), gevent.threadpool.get_hub(), lambda: True
-        )  # Fix gevent thread switch error
+        import gevent
+        hub = gevent.get_hub()
+        self._quit_async = hub.loop.async_()
+        self._quit_async.start(lambda: gevent.spawn_later(0.1, self.quitServers))
 
-        # Run pystray in a real thread (not gevent compatible)
-        gevent.threadpool.start_new_thread(self.icon.run, ())
+        # Run pystray in a real OS thread (pystray is not gevent compatible)
+        self._icon_thread = threading.Thread(target=self.icon.run, name="Trayicon", daemon=True)
+        self._icon_thread.start()
         super(ActionsPlugin, self).main()
         try:
             self.icon.stop()
         except Exception:
             pass
+        try:
+            self._quit_async.stop()
+        except Exception:
+            pass
 
     def _on_quit(self, icon, item):
         self.icon.stop()
-        self.quit_servers_event.set(True)
+        self._quit_async.send()
 
     def _on_toggle_console(self, icon, item):
         if self.console:
@@ -198,8 +217,12 @@ class ActionsPlugin(object):
         self._on_quit(None, None)
 
     def quitServers(self):
-        self.main.ui_server.stop()
-        self.main.file_server.stop()
+        ui_server = getattr(self.main, "ui_server", None)
+        file_server = getattr(self.main, "file_server", None)
+        if ui_server is not None:
+            ui_server.stop()
+        if file_server is not None:
+            file_server.stop()
 
     def opensite(self, url):
         import webbrowser
@@ -213,21 +236,30 @@ class ActionsPlugin(object):
             print("Trayicon announce error: %s" % err)
 
     def titleIp(self):
-        title = "IP: %s " % ", ".join(self.main.file_server.ip_external_list)
-        if any(self.main.file_server.port_opened):
+        file_server = getattr(self.main, "file_server", None)
+        if file_server is None:
+            return "IP: - "
+        title = "IP: %s " % ", ".join(file_server.ip_external_list)
+        if any(file_server.port_opened):
             title += _["(active)"]
         else:
             title += _["(passive)"]
         return title
 
     def titleConnections(self):
-        title = _["Connections: %s"] % len(self.main.file_server.connections)
+        file_server = getattr(self.main, "file_server", None)
+        if file_server is None:
+            return _["Connections: %s"] % 0
+        title = _["Connections: %s"] % len(file_server.connections)
         return title
 
     def titleTransfer(self):
+        file_server = getattr(self.main, "file_server", None)
+        if file_server is None:
+            return _["Received: %.2f MB | Sent: %.2f MB"] % (0.0, 0.0)
         title = _["Received: %.2f MB | Sent: %.2f MB"] % (
-            float(self.main.file_server.bytes_recv) / 1024 / 1024,
-            float(self.main.file_server.bytes_sent) / 1024 / 1024
+            float(file_server.bytes_recv) / 1024 / 1024,
+            float(file_server.bytes_sent) / 1024 / 1024
         )
         return title
 
