@@ -116,6 +116,8 @@ class UiWebsocketPlugin(object):
                 continue  # Site not for us
             if query_site_info:
                 site = self.server.sites.get(address)
+                if not site:
+                    continue  # Site was deleted
                 ret[address] = self.formatSiteInfo(site, create_user=False)
             else:
                 ret[address] = merged_type
