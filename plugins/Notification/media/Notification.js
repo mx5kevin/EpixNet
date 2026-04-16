@@ -101,8 +101,8 @@
       }
 
       if (total > 0) {
-        this.badge.textContent = total > 99 ? "99+" : total.toString();
-        this.badge.style.display = "block";
+        this.badge.textContent = total > 99 ? "\u221E" : total.toString();
+        this.badge.style.display = "flex";
         this.badge.title = this.buildTooltip();
       } else {
         this.badge.style.display = "none";

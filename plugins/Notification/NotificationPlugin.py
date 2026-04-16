@@ -144,6 +144,19 @@ class UiWebsocketPlugin(object):
                         query_params = map(helper.sqlquote, params)
                         query = query.replace(":params", ",".join(query_params))
 
+                    # Replace {xid_directory} placeholder with user's directory for this site
+                    if "{xid_directory}" in query:
+                        xid_dir = self.user.getUserDirectory(address)
+                        if not xid_dir:
+                            continue
+                        query = query.replace("{xid_directory}", xid_dir)
+
+                    # Replace {last_seen} with dismiss timestamp so queries can filter
+                    dismissed = site_data.get("notification_dismissed", {})
+                    last_seen = dismissed.get(name, 0)
+                    if "{last_seen}" in query:
+                        query = query.replace("{last_seen}", str(int(last_seen)))
+
                     res = site.storage.query(query)
                     row = next(res, None)
                     if row:
@@ -151,10 +164,6 @@ class UiWebsocketPlugin(object):
                         count = row.get("count", row.get("COUNT(*)", 0))
                     else:
                         count = 0
-
-                    # Apply dismiss filter if set
-                    dismissed = site_data.get("notification_dismissed", {})
-                    last_seen = dismissed.get(name, 0)
 
                     result_entry = {
                         "site": address,
@@ -215,7 +224,17 @@ class UiWebsocketPlugin(object):
         site_data = self.user.getSiteData(site_address)
         if "notification_dismissed" not in site_data:
             site_data["notification_dismissed"] = {}
-        site_data["notification_dismissed"][name] = int(time.time())
+        site_data["notification_dismissed"][name] = int(time.time() * 1000)
+        self.user.save()
+        self.response(to, "ok")
+
+    # Dismiss own site's notifications (callable from within the site iframe, no admin needed)
+    def actionNotificationDismissSelf(self, to, name):
+        site_address = self.site.address
+        site_data = self.user.getSiteData(site_address)
+        if "notification_dismissed" not in site_data:
+            site_data["notification_dismissed"] = {}
+        site_data["notification_dismissed"][name] = int(time.time() * 1000)
         self.user.save()
         self.response(to, "ok")
 
