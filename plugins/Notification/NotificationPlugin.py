@@ -165,11 +165,6 @@ class UiWebsocketPlugin(object):
                     else:
                         count = 0
 
-                    # Subtract dismissed count baseline so only new items show
-                    dismissed_counts = site_data.get("notification_dismissed_count", {})
-                    baseline = dismissed_counts.get(name, 0)
-                    count = max(0, count - baseline)
-
                     result_entry = {
                         "site": address,
                         "title": title,
@@ -223,42 +218,10 @@ class UiWebsocketPlugin(object):
         })
 
     def _dismissNotification(self, site_address, name):
-        """Snapshot current query count as baseline so only new items trigger alerts."""
-        from Site import SiteManager
-
         site_data = self.user.getSiteData(site_address)
         if "notification_dismissed" not in site_data:
             site_data["notification_dismissed"] = {}
         site_data["notification_dismissed"][name] = int(time.time() * 1000)
-
-        # Store current raw count as baseline
-        if "notification_dismissed_count" not in site_data:
-            site_data["notification_dismissed_count"] = {}
-        subscriptions = site_data.get("notifications", {})
-        query_set = subscriptions.get(name)
-        if query_set:
-            try:
-                site = SiteManager.site_manager.get(site_address)
-                if site and site.storage.has_db:
-                    query_raw, params = query_set
-                    query = query_raw
-                    if params:
-                        query_params = map(helper.sqlquote, params)
-                        query = query.replace(":params", ",".join(query_params))
-                    if "{xid_directory}" in query:
-                        xid_dir = self.user.getUserDirectory(site_address)
-                        if xid_dir:
-                            query = query.replace("{xid_directory}", xid_dir)
-                    if "{last_seen}" in query:
-                        query = query.replace("{last_seen}", "0")
-                    res = site.storage.query(query)
-                    row = next(res, None)
-                    if row:
-                        row = dict(row)
-                        site_data["notification_dismissed_count"][name] = row.get("count", row.get("COUNT(*)", 0))
-            except Exception as err:
-                self.log.error("Dismiss count snapshot error: %s" % err)
-
         self.user.save()
 
     # Dismiss (mark as seen) notifications for a site
