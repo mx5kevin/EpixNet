@@ -165,6 +165,15 @@ class UiWebsocketPlugin(object):
                     else:
                         count = 0
 
+                    # Subtract "seen" baseline from site's private user settings
+                    # Sites save notification_seen.{name} via userSetSettings when visited
+                    site_settings = site_data.get("settings", {})
+                    if site_settings:
+                        seen = site_settings.get("notification_seen", {})
+                        baseline = seen.get(name, 0)
+                        if baseline and count:
+                            count = max(0, count - baseline)
+
                     result_entry = {
                         "site": address,
                         "title": title,
