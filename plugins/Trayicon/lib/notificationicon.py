@@ -521,17 +521,19 @@ class NotificationIcon(object):
         self.items = []
 
 
-    def _bubble(self, iconinfo):
+    def _bubble(self):
         if self._info_bubble:
             info_bubble = self._info_bubble
             self._info_bubble = None
-            message = str(self._info_bubble)
-            iconinfo.uFlags |= NIF_INFO
-            iconinfo.szInfo = message
-            iconinfo.szInfoTitle = message
-            iconinfo.dwInfoFlags = NIIF_INFO
-            iconinfo.union.uTimeout = 10000
-            Shell_NotifyIcon(NIM_MODIFY, ctypes.pointer(iconinfo))
+            title = str(info_bubble[0]) if isinstance(info_bubble, tuple) else "EpixNet"
+            message = str(info_bubble[1]) if isinstance(info_bubble, tuple) else str(info_bubble)
+            self.iconinfo.uFlags |= NIF_INFO
+            self.iconinfo.szInfo = message
+            self.iconinfo.szInfoTitle = title
+            self.iconinfo.dwInfoFlags = NIIF_INFO
+            self.iconinfo.union.uTimeout = 10000
+            Shell_NotifyIcon(NIM_MODIFY, ctypes.pointer(self.iconinfo))
+            self.iconinfo.uFlags &= ~NIF_INFO
 
 
     def _run(self):
@@ -644,6 +646,7 @@ class NotificationIcon(object):
             if not any(thread.getName() == 'MainThread' and thread.isAlive()
                        for thread in threading.enumerate()):
                 self._die = True
+            self._bubble()
         elif msg == WM_MENUCOMMAND and lParam == WM_LBUTTONUP:
             self.clicked()
         elif msg == WM_MENUCOMMAND and lParam == WM_RBUTTONUP:
@@ -676,8 +679,11 @@ class NotificationIcon(object):
             pass
 
 
-    def announce(self, text):
-        self._info_bubble = text
+    def announce(self, text, title=None):
+        if title:
+            self._info_bubble = (title, text)
+        else:
+            self._info_bubble = text
 
 
 def hideConsole():

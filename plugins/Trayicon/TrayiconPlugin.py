@@ -15,112 +15,294 @@ if "_" not in locals():
     _ = Translate(plugin_dir + "/languages/")
 
 
+def _has_console():
+    """Check if a console window is available (Windows only)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetConsoleWindow() != 0
+    except Exception:
+        return False
+
+
+def _hide_console():
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+    except Exception:
+        pass
+
+
+def _show_console():
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 1)
+    except Exception:
+        pass
+
+
+def _get_startup_folder():
+    """Get Windows Startup folder path. Returns None on non-Windows."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from .lib import winfolders
+        return winfolders.get(winfolders.STARTUP)
+    except Exception:
+        return None
+
+
 @PluginManager.registerTo("Actions")
 class ActionsPlugin(object):
 
     def main(self):
-        global notificationicon, winfolders
-        from .lib import notificationicon, winfolders
-        import gevent.threadpool
+        try:
+            import pystray
+            import pystray._base
+            from PIL import Image
+        except ImportError as err:
+            print("Trayicon plugin: pystray or Pillow not installed (%s), skipping tray icon." % err)
+            super(ActionsPlugin, self).main()
+            return
+
+        # pystray runs on a real OS thread and uses queue.Queue for signaling.
+        # gevent.monkey.patch_all() replaces queue.Queue with a cooperative
+        # version that only works inside a gevent hub, which causes LoopExit
+        # when pystray's setup thread blocks on .get(). Swap in the unpatched
+        # stdlib Queue on pystray's own queue module reference.
+        try:
+            import gevent.monkey
+            real_queue_cls = gevent.monkey.get_original("queue", "Queue")
+            pystray._base.queue.Queue = real_queue_cls
+        except Exception as err:
+            print("Trayicon plugin: failed to restore stdlib queue.Queue: %s" % err)
+
+        import threading
         import main
 
         self.main = main
-
-        icon = notificationicon.NotificationIcon(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trayicon.ico'),
-            "EpixNet %s" % config.version
-        )
-        self.icon = icon
-
         self.console = False
+
+        icon_path = os.path.join(plugin_dir, "trayicon.ico")
+
+        # Set AppUserModelID so Windows toasts are attributed to EpixNet
+        # instead of "Python". The friendly display name and icon are
+        # registered once per user under HKCU so the toast shows "EpixNet".
+        if sys.platform == "win32":
+            aumid = "EpixZone.EpixNet"
+            try:
+                import winreg
+                key_path = r"Software\Classes\AppUserModelId\%s" % aumid
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                    winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "EpixNet")
+                    if os.path.exists(icon_path):
+                        winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, icon_path)
+            except Exception as err:
+                print("Trayicon plugin: failed to register AUMID display name: %s" % err)
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(aumid)
+            except Exception as err:
+                print("Trayicon plugin: failed to set AppUserModelID: %s" % err)
+
+        # Load icon image
+        try:
+            icon_image = Image.open(icon_path)
+        except Exception as err:
+            print("Trayicon plugin: Failed to load icon %s: %s" % (icon_path, err))
+            super(ActionsPlugin, self).main()
+            return
+
+        ui_ip = config.ui_ip if config.ui_ip != "*" else "127.0.0.1"
+        if ":" in ui_ip:
+            ui_ip = "[" + ui_ip + "]"
+        self._epixnet_url = "http://%s:%s/%s" % (ui_ip, config.ui_port, config.homepage)
+
+        # Build menu
+        menu_items = [
+            pystray.MenuItem(
+                lambda item: self.titleIp(),
+                None, enabled=False
+            ),
+            pystray.MenuItem(
+                lambda item: self.titleConnections(),
+                None, enabled=False
+            ),
+            pystray.MenuItem(
+                lambda item: self.titleTransfer(),
+                None, enabled=False
+            ),
+        ]
+
+        # Console toggle (Windows only)
+        if _has_console():
+            menu_items.append(
+                pystray.MenuItem(
+                    lambda item: _["Show console window"],
+                    self._on_toggle_console,
+                    checked=lambda item: self.console
+                )
+            )
+
+        # Autorun toggle (Windows only)
+        if sys.platform == "win32":
+            menu_items.append(
+                pystray.MenuItem(
+                    lambda item: _["Start EpixNet when Windows starts"],
+                    self._on_toggle_autorun,
+                    checked=lambda item: self.isAutorunEnabled()
+                )
+            )
+
+        menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(pystray.MenuItem(
+            _["EpixNet X"],
+            lambda icon, item: self.opensite("https://x.com/zone_epix")
+        ))
+        menu_items.append(pystray.MenuItem(
+            _["EpixNet Github"],
+            lambda icon, item: self.opensite("https://github.com/EpixZone/EpixNet")
+        ))
+        menu_items.append(pystray.MenuItem(
+            _["Report bug/request feature"],
+            lambda icon, item: self.opensite("https://github.com/EpixZone/EpixNet/issues")
+        ))
+        menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(pystray.MenuItem(
+            _["!Open EpixNet"].lstrip("!"),
+            lambda icon, item: self.opensite(self._epixnet_url),
+            default=True
+        ))
+        menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(pystray.MenuItem(
+            _["Quit"],
+            self._on_quit
+        ))
+
+        self.icon = pystray.Icon(
+            "epixnet",
+            icon=icon_image,
+            title="EpixNet %s" % config.version,
+            menu=pystray.Menu(*menu_items)
+        )
 
         @atexit.register
         def hideIcon():
             try:
-                icon.die()
+                self.icon.stop()
             except Exception as err:
                 print("Error removing trayicon: %s" % err)
 
-        ui_ip = config.ui_ip if config.ui_ip != "*" else "127.0.0.1"
+        import gevent
+        hub = gevent.get_hub()
+        self._quit_async = hub.loop.async_()
+        self._quit_async.start(lambda: gevent.spawn_later(0.1, self.quitServers))
 
-        if ":" in ui_ip:
-            ui_ip = "[" + ui_ip + "]"
-
-        icon.items = [
-            (self.titleIp, False),
-            (self.titleConnections, False),
-            (self.titleTransfer, False),
-            (self.titleConsole, self.toggleConsole),
-            (self.titleAutorun, self.toggleAutorun),
-            "--",
-            (_["EpixNet X"], lambda: self.opensite("https://x.com/zone_epix")),
-            (_["EpixNet Github"], lambda: self.opensite("https://github.com/EpixZone/EpixNet")),
-            (_["Report bug/request feature"], lambda: self.opensite("https://github.com/EpixZone/EpixNet/issues")),
-            "--",
-            (_["!Open EpixNet"], lambda: self.opensite("http://%s:%s/%s" % (ui_ip, config.ui_port, config.homepage))),
-            "--",
-            (_["Quit"], self.quit),
-        ]
-
-        if not notificationicon.hasConsole():
-            del icon.items[3]
-
-        icon.clicked = lambda: self.opensite("http://%s:%s/%s" % (ui_ip, config.ui_port, config.homepage))
-        self.quit_servers_event = gevent.threadpool.ThreadResult(
-            lambda res: gevent.spawn_later(0.1, self.quitServers), gevent.threadpool.get_hub(), lambda: True
-        )  # Fix gevent thread switch error
-        gevent.threadpool.start_new_thread(icon._run, ())  # Start in real thread (not gevent compatible)
+        # Run pystray in a real OS thread (pystray is not gevent compatible)
+        self._icon_thread = threading.Thread(target=self.icon.run, name="Trayicon", daemon=True)
+        self._icon_thread.start()
         super(ActionsPlugin, self).main()
-        icon._die = True
+        try:
+            self.icon.stop()
+        except Exception:
+            pass
+        try:
+            self._quit_async.stop()
+        except Exception:
+            pass
+
+    def _on_quit(self, icon, item):
+        self.icon.stop()
+        self._quit_async.send()
+
+    def _on_toggle_console(self, icon, item):
+        if self.console:
+            _hide_console()
+            self.console = False
+        else:
+            _show_console()
+            self.console = True
+
+    def _on_toggle_autorun(self, icon, item):
+        if self.isAutorunEnabled():
+            os.unlink(self.getAutorunPath())
+        else:
+            open(self.getAutorunPath(), "wb").write(self.formatAutorun().encode("utf8"))
 
     def quit(self):
-        self.icon.die()
-        self.quit_servers_event.set(True)
+        self._on_quit(None, None)
 
     def quitServers(self):
-        self.main.ui_server.stop()
-        self.main.file_server.stop()
+        ui_server = getattr(self.main, "ui_server", None)
+        file_server = getattr(self.main, "file_server", None)
+        if ui_server is not None:
+            ui_server.stop()
+        if file_server is not None:
+            file_server.stop()
 
     def opensite(self, url):
         import webbrowser
         webbrowser.open(url, new=0)
 
+    def announce(self, message, title=""):
+        """Show an OS notification toast via the tray icon."""
+        icon = getattr(self, "icon", None)
+        if icon is None or not getattr(icon, "visible", False):
+            return
+        try:
+            # Bypass pystray's title fallback (which uses self.title) so
+            # toasts don't show a redundant EpixNet heading above the body.
+            if sys.platform == "win32" and hasattr(icon, "_message"):
+                from pystray import _win32 as pystray_win32
+                icon._message(
+                    pystray_win32.win32.NIM_MODIFY,
+                    pystray_win32.win32.NIF_INFO,
+                    szInfo=message,
+                    szInfoTitle=title or "",
+                )
+            else:
+                icon.notify(message, title or None)
+        except Exception as err:
+            print("Trayicon announce error: %s" % err)
+
     def titleIp(self):
-        title = "!IP: %s " % ", ".join(self.main.file_server.ip_external_list)
-        if any(self.main.file_server.port_opened):
+        file_server = getattr(self.main, "file_server", None)
+        if file_server is None:
+            return "IP: - "
+        title = "IP: %s " % ", ".join(file_server.ip_external_list)
+        if any(file_server.port_opened):
             title += _["(active)"]
         else:
             title += _["(passive)"]
         return title
 
     def titleConnections(self):
-        title = _["Connections: %s"] % len(self.main.file_server.connections)
+        file_server = getattr(self.main, "file_server", None)
+        if file_server is None:
+            return _["Connections: %s"] % 0
+        title = _["Connections: %s"] % len(file_server.connections)
         return title
 
     def titleTransfer(self):
+        file_server = getattr(self.main, "file_server", None)
+        if file_server is None:
+            return _["Received: %.2f MB | Sent: %.2f MB"] % (0.0, 0.0)
         title = _["Received: %.2f MB | Sent: %.2f MB"] % (
-            float(self.main.file_server.bytes_recv) / 1024 / 1024,
-            float(self.main.file_server.bytes_sent) / 1024 / 1024
+            float(file_server.bytes_recv) / 1024 / 1024,
+            float(file_server.bytes_sent) / 1024 / 1024
         )
         return title
 
-    def titleConsole(self):
-        translate = _["Show console window"]
-        if self.console:
-            return "+" + translate
-        else:
-            return translate
-
-    def toggleConsole(self):
-        if self.console:
-            notificationicon.hideConsole()
-            self.console = False
-        else:
-            notificationicon.showConsole()
-            self.console = True
-
     def getAutorunPath(self):
-        return "%s\\epixnet.cmd" % winfolders.get(winfolders.STARTUP)
+        startup = _get_startup_folder()
+        if not startup:
+            return None
+        return "%s\\epixnet.cmd" % startup
 
     def formatAutorun(self):
         args = sys.argv[:]
@@ -154,17 +336,6 @@ class ActionsPlugin(object):
 
     def isAutorunEnabled(self):
         path = self.getAutorunPath()
+        if not path:
+            return False
         return os.path.isfile(path) and open(path, "rb").read().decode("utf8") == self.formatAutorun()
-
-    def titleAutorun(self):
-        translate = _["Start EpixNet when Windows starts"]
-        if self.isAutorunEnabled():
-            return "+" + translate
-        else:
-            return translate
-
-    def toggleAutorun(self):
-        if self.isAutorunEnabled():
-            os.unlink(self.getAutorunPath())
-        else:
-            open(self.getAutorunPath(), "wb").write(self.formatAutorun().encode("utf8"))
