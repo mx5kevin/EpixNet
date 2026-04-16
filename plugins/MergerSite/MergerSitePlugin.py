@@ -145,6 +145,9 @@ class UiWebsocketPlugin(object):
             req_self = copy.copy(self)
             req_self.site = self.server.sites.get(merged_address)  # Change the site to the merged one
 
+            if not req_self.site:
+                return self.response(to, {"error": "Merged site not found: %s" % merged_address})
+
             func = getattr(super(UiWebsocketPlugin, req_self), func_name)
             return func(to, merged_inner_path, *args, **kwargs)
         else:
