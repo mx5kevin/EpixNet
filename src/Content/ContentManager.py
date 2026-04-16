@@ -1028,6 +1028,8 @@ class ContentManager:
         if str(inner_path) == "content.json":  # Root content.json
             try:
                 root_content = self.contents.get("content.json")
+                if not root_content and content:
+                    root_content = content  # Bootstrap: no content.json loaded yet, use the one being verified
                 if root_content and "signers" in root_content:
                     valid_signers += root_content["signers"][:]
             except KeyError:
