@@ -88,8 +88,29 @@ class ActionsPlugin(object):
         self.main = main
         self.console = False
 
-        # Load icon image
         icon_path = os.path.join(plugin_dir, "trayicon.ico")
+
+        # Set AppUserModelID so Windows toasts are attributed to EpixNet
+        # instead of "Python". The friendly display name and icon are
+        # registered once per user under HKCU so the toast shows "EpixNet".
+        if sys.platform == "win32":
+            aumid = "EpixZone.EpixNet"
+            try:
+                import winreg
+                key_path = r"Software\Classes\AppUserModelId\%s" % aumid
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                    winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "EpixNet")
+                    if os.path.exists(icon_path):
+                        winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, icon_path)
+            except Exception as err:
+                print("Trayicon plugin: failed to register AUMID display name: %s" % err)
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(aumid)
+            except Exception as err:
+                print("Trayicon plugin: failed to set AppUserModelID: %s" % err)
+
+        # Load icon image
         try:
             icon_image = Image.open(icon_path)
         except Exception as err:
@@ -228,10 +249,24 @@ class ActionsPlugin(object):
         import webbrowser
         webbrowser.open(url, new=0)
 
-    def announce(self, message, title="EpixNet"):
+    def announce(self, message, title=""):
         """Show an OS notification toast via the tray icon."""
+        icon = getattr(self, "icon", None)
+        if icon is None or not getattr(icon, "visible", False):
+            return
         try:
-            self.icon.notify(message, title)
+            # Bypass pystray's title fallback (which uses self.title) so
+            # toasts don't show a redundant EpixNet heading above the body.
+            if sys.platform == "win32" and hasattr(icon, "_message"):
+                from pystray import _win32 as pystray_win32
+                icon._message(
+                    pystray_win32.win32.NIM_MODIFY,
+                    pystray_win32.win32.NIF_INFO,
+                    szInfo=message,
+                    szInfoTitle=title or "",
+                )
+            else:
+                icon.notify(message, title or None)
         except Exception as err:
             print("Trayicon announce error: %s" % err)
 

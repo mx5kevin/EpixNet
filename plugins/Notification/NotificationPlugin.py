@@ -196,20 +196,19 @@ class UiWebsocketPlugin(object):
         prev_total = _last_totals.get(user_key, 0)
         _last_totals[user_key] = new_total
 
-        if new_total > prev_total and prev_total >= 0:
+        if new_total > prev_total:
             try:
                 import main
                 announce = getattr(main.actions, "announce", None)
                 if announce:
-                    # Build toast message from results with counts
                     parts = []
                     for r in results:
                         if r.get("count", 0) > 0:
                             parts.append("%s %s" % (r["count"], r.get("title", r.get("name", ""))))
                     if parts:
-                        announce("\n".join(parts), title="EpixNet")
-            except Exception:
-                pass  # Trayicon plugin may not be loaded
+                        announce("\n".join(parts), title="")
+            except Exception as err:
+                self.log.error("Notification toast error: %s" % Debug.formatException(err))
 
         return self.response(to, {
             "results": results,
