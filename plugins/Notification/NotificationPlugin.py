@@ -161,7 +161,7 @@ class UiWebsocketPlugin(object):
                     row = next(res, None)
                     if row:
                         row = dict(row)
-                        count = row.get("count", row.get("COUNT(*)", 0))
+                        count = row.get("count", row.get("COUNT(*)", 0)) or 0
                     else:
                         count = 0
 
