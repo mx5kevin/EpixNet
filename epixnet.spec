@@ -41,6 +41,12 @@ if os.path.isdir('tools'):
 # Hidden imports for gevent and other packages
 hiddenimports += collect_submodules('gevent')
 hiddenimports += collect_submodules('asyncio_gevent')
+# pystray picks its backend at runtime (pystray._win32/_darwin/_xorg) —
+# PyInstaller can't see those, so collect all submodules explicitly.
+# Without these, the Trayicon plugin silently falls through its ImportError
+# guard and no tray icon appears in the installed build.
+hiddenimports += collect_submodules('pystray')
+hiddenimports += collect_submodules('PIL')
 hiddenimports += [
     'gevent',
     'gevent.monkey',
@@ -101,6 +107,16 @@ hiddenimports += [
     'aiobtdht',
     'aioudp',
     'merkletools',
+    'pystray',
+    'pystray._base',
+    'pystray._win32',
+    'pystray._darwin',
+    'pystray._xorg',
+    'pystray._appindicator',
+    'pystray._gtk',
+    'PIL',
+    'PIL.Image',
+    'PIL.ImageDraw',
 ]
 
 a = Analysis(
