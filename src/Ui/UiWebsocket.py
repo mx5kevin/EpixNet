@@ -595,8 +595,11 @@ class UiWebsocket(object):
                     include_diffs = site.content_manager.getDiffs(include_path)
                     site.publish(limit=5, inner_path=include_path, diffs=include_diffs)
 
-        if back == 0:  # Failed to publish to anyone
-            self.cmd("progress", ["publish", _["Content publish failed."], -100])
+        if back == 0:  # Failed to publish to anyone immediately
+            if len(site.peers) > 0:
+                self.cmd("progress", ["publish", _["Content published to {0}/{1} peers."].format(0, 5), 0])
+            else:
+                self.cmd("progress", ["publish", _["Content publish failed."], -100])
         else:
             cbProgress(back, back)
         return back
@@ -629,8 +632,8 @@ class UiWebsocket(object):
                         self.response(to, {"error": "Port not opened."})
 
             else:
-                if notification:
-                    self.response(to, {"error": "Content publish failed."})
+                if callback:
+                    self.response(to, "ok")
 
     def actionSiteReload(self, to, inner_path):
         self.site.content_manager.loadContent(inner_path, add_bad_files=False)
