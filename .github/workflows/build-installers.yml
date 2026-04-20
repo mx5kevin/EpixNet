@@ -35,49 +35,33 @@ jobs:
       - name: Download EpixNetBundle tools
         shell: pwsh
         run: |
-          $repoUrl = "https://github.com/EpixZone/EpixNetBundle"
+          $repoUrl = "https://github.com/EpixZone/EpixNetBundle.git"
           $branch = "py3"
           $toolsPath = "tools_win"
 
-          # Create tools directory
-          New-Item -ItemType Directory -Path "tools" -Force | Out-Null
+          Write-Host "Cloning $repoUrl ($branch, sparse: $toolsPath)..."
 
-          Write-Host "Downloading tools from $repoUrl/$toolsPath (branch: $branch)..."
+          # Sparse + shallow clone — avoids GitHub Contents API rate limits
+          # that were failing mid-fetch with 404s on recursive downloads.
+          git clone --depth=1 --filter=blob:none --sparse --branch $branch $repoUrl bundle
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: git clone failed"; exit 1 }
 
-          # Recursive function to download files from GitHub API
-          function Download-GitHubDirectory {
-            param(
-              [string]$apiPath,
-              [string]$localPath
-            )
+          Push-Location bundle
+          git sparse-checkout set $toolsPath
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Write-Host "ERROR: sparse-checkout failed"; exit 1 }
+          Pop-Location
 
-            $apiUrl = "https://api.github.com/repos/EpixZone/EpixNetBundle/contents/$apiPath`?ref=$branch"
-
-            try {
-              $response = Invoke-RestMethod -Uri $apiUrl -Headers @{"Accept" = "application/vnd.github.v3+json"}
-
-              foreach ($item in $response) {
-                if ($item.type -eq "file") {
-                  $fileName = $item.name
-                  $downloadUrl = $item.download_url
-                  $outputPath = Join-Path $localPath $fileName
-
-                  Write-Host "Downloading $($item.path)..."
-                  Invoke-WebRequest -Uri $downloadUrl -OutFile $outputPath
-                } elseif ($item.type -eq "dir") {
-                  $dirPath = Join-Path $localPath $item.name
-                  New-Item -ItemType Directory -Path $dirPath -Force | Out-Null
-                  Download-GitHubDirectory -apiPath $item.path -localPath $dirPath
-                }
-              }
-            } catch {
-              Write-Host "ERROR: Failed to download from $apiPath : $_"
-              exit 1
-            }
+          if (-not (Test-Path "bundle/$toolsPath")) {
+            Write-Host "ERROR: bundle/$toolsPath not found after sparse checkout"
+            exit 1
           }
 
-          Download-GitHubDirectory -apiPath $toolsPath -localPath "tools"
-          Write-Host "✓ All tools downloaded successfully"
+          # Move bundle/tools_win -> tools (epixnet.spec bundles the 'tools' dir)
+          Move-Item -Path "bundle/$toolsPath" -Destination "tools" -Force
+          Remove-Item -Recurse -Force bundle
+
+          $fileCount = (Get-ChildItem -Path tools -Recurse -File | Measure-Object).Count
+          Write-Host "✓ Downloaded $fileCount files into tools/"
 
       - name: Generate build info
         run: |
